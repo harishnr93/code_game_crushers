@@ -1,0 +1,239 @@
+#include "../include/my_core_bot.h"
+
+void	ft_init_func(void *data);
+void	ft_user_loop(void *data);
+
+int	main(int argc, char **argv)
+{
+	int	won;
+	// ft_enable_debug(); // uncomment this to show more debug information in the console when running a game
+	ft_init_con("x-men", &argc, argv);
+	won = ft_loop(&ft_init_func, &ft_user_loop, NULL, NULL);
+	ft_close_con();
+	if (won)
+		return (0);
+	return (1);
+}
+
+// this function is called once at the start of the game
+void	ft_init_func(void *data)
+{
+	(void)data;
+
+	printf("Init CORE Bot\n");
+}
+
+/* Count units by type */
+static void	count_units(t_obj **units, int *warrior_count, int *worker_count)
+{
+	int	i;
+
+	*warrior_count = 0;
+	*worker_count = 0;
+	i = 0;
+	while (units[i])
+	{
+		if (units[i]->s_unit.type_id == UNIT_WARRIOR)
+			(*warrior_count)++;
+		else if (units[i]->s_unit.type_id == UNIT_WORKER)
+			(*worker_count)++;
+		i++;
+	}
+}
+
+/* Count enemies near core */
+static int	count_enemies_near_core(t_obj **enemy_units, t_obj *my_core)
+{
+	int	enemies_near_core;
+	int	i;
+
+	enemies_near_core = 0;
+	i = 0;
+	while (enemy_units[i])
+	{
+		if (ft_distance(enemy_units[i], my_core) < 20)
+			enemies_near_core++;
+		i++;
+	}
+	return (enemies_near_core);
+}
+
+/* Create unit based on game state */
+static void	create_unit_strategy(t_team *my_team, int warrior_count,
+	int worker_count, int tick_counter, int enemies_near_core)
+{
+	bool	early_game;
+	bool	under_threat;
+
+	early_game = (my_team->balance < 300 && tick_counter < 500);
+	under_threat = (enemies_near_core > 0);
+	if (early_game && worker_count < 5)
+		ft_create_unit(UNIT_WORKER);
+	else if (under_threat || warrior_count * 2 < worker_count)
+		ft_create_unit(UNIT_WARRIOR);
+	else if (worker_count < 15)
+		ft_create_unit(UNIT_WORKER);
+	else
+		ft_create_unit(UNIT_WARRIOR);
+}
+
+/* Handle warrior behavior when under threat */
+static void	warrior_defense(t_obj *warrior, t_obj **enemy_units,
+	t_obj *my_core, int tick_counter)
+{
+	t_obj	*nearest_enemy_to_core;
+	double	min_distance;
+	int		j;
+	int		offset_x;
+	int		offset_y;
+
+	nearest_enemy_to_core = NULL;
+	min_distance = 99999;
+	j = 0;
+	while (enemy_units[j])
+	{
+		if (ft_distance(enemy_units[j], my_core) < min_distance)
+		{
+			min_distance = ft_distance(enemy_units[j], my_core);
+			nearest_enemy_to_core = enemy_units[j];
+		}
+		j++;
+	}
+	if (nearest_enemy_to_core)
+		ft_travel_attack(warrior, nearest_enemy_to_core);
+	else
+	{
+		offset_x = (tick_counter % 10) - 5;
+		offset_y = ((tick_counter / 10) % 10) - 5;
+		ft_travel_to(warrior, my_core->x + offset_x, my_core->y + offset_y);
+	}
+}
+
+/* Handle warrior behavior when attacking */
+static void	warrior_offense(t_obj *warrior, t_obj *enemy_core,
+	int warrior_count, int tick_counter)
+{
+	t_obj	*enemy;
+	int		patrol_x;
+	int		patrol_y;
+
+	enemy = ft_get_nearest_opponent_unit(warrior);
+	if (enemy && ft_distance(warrior, enemy) < 15)
+		ft_travel_attack(warrior, enemy);
+	else if (warrior_count >= 5)
+		ft_travel_attack(warrior, enemy_core);
+	else
+	{
+		patrol_x = warrior->x + (30 * cos(tick_counter * 0.05));
+		patrol_y = warrior->y + (30 * sin(tick_counter * 0.05));
+		ft_travel_to(warrior, patrol_x, patrol_y);
+	}
+}
+
+/* Check if resource is contested by enemies */
+static bool	is_resource_contested(t_obj *resource, t_obj **enemy_units)
+{
+	int	j;
+
+	j = 0;
+	while (enemy_units[j])
+	{
+		if (ft_distance(enemy_units[j], resource) < 10)
+			return (true);
+		j++;
+	}
+	return (false);
+}
+
+/* Handle worker behavior */
+static void	handle_worker(t_obj *worker, t_obj **enemy_units,
+	t_obj *my_core, int tick_counter, int warrior_count)
+{
+	t_obj	*nearest_resource;
+	int		safe_x;
+	int		safe_y;
+	double	angle;
+	int		explore_x;
+	int		explore_y;
+
+	nearest_resource = ft_get_nearest_resource(worker);
+	if (nearest_resource)
+	{
+		if (is_resource_contested(nearest_resource, enemy_units) && warrior_count < 3)
+		{
+			safe_x = my_core->x + ((tick_counter % 20) - 10);
+			safe_y = my_core->y + (((tick_counter / 20) % 20) - 10);
+			ft_travel_to(worker, safe_x, safe_y);
+		}
+		else
+			ft_travel_attack(worker, nearest_resource);
+	}
+	else
+	{
+		angle = 0.1 * tick_counter;
+		explore_x = my_core->x + (5 + ((tick_counter % 40) / 2)) * cos(angle);
+		explore_y = my_core->y + (5 + ((tick_counter % 40) / 2)) * sin(angle);
+		ft_travel_to(worker, explore_x, explore_y);
+	}
+}
+
+/* Handle unit behaviors */
+static void	handle_units(t_obj **my_units, t_obj **enemy_units,
+	t_obj *my_core, t_obj *enemy_core, int tick_counter,
+	int warrior_count, int enemies_near_core)
+{
+	int		i;
+	t_obj	*curr;
+	bool	under_threat;
+
+	under_threat = (enemies_near_core > 0);
+	i = 0;
+	while (my_units[i])
+	{
+		curr = my_units[i];
+		if (curr->s_unit.type_id == UNIT_WARRIOR)
+		{
+			if (under_threat && enemies_near_core > warrior_count / 2)
+				warrior_defense(curr, enemy_units, my_core, tick_counter);
+			else
+				warrior_offense(curr, enemy_core, warrior_count, tick_counter);
+		}
+		else if (curr->s_unit.type_id == UNIT_WORKER)
+			handle_worker(curr, enemy_units, my_core, tick_counter, warrior_count);
+		i++;
+	}
+}
+
+/* Main game loop function */
+void	ft_user_loop(void *data)
+{
+	static int	tick_counter = 0;
+	t_team		*my_team;
+	t_obj		*my_core;
+	t_obj		*enemy_core;
+	t_obj		**my_units;
+	t_obj		**enemy_units;
+	int			warrior_count;
+	int			worker_count;
+	int			enemies_near_core;
+
+	(void)data;
+	tick_counter++;
+	my_team = ft_get_my_team();
+	my_core = ft_get_my_core();
+	enemy_core = ft_get_first_opponent_core();
+	my_units = ft_get_my_units();
+	enemy_units = ft_get_opponent_units();
+	
+	count_units(my_units, &warrior_count, &worker_count);
+	enemies_near_core = count_enemies_near_core(enemy_units, my_core);
+	
+	create_unit_strategy(my_team, warrior_count, worker_count, 
+		tick_counter, enemies_near_core);
+	
+	handle_units(my_units, enemy_units, my_core, enemy_core,
+		tick_counter, warrior_count, enemies_near_core);
+	
+	free(my_units);
+	free(enemy_units);
+}
