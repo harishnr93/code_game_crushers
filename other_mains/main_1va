@@ -1,0 +1,149 @@
+void ft_user_loop(void *data)
+{
+    (void)data;
+    static int tick_counter = 0;
+    tick_counter++;
+
+    // Get game state information
+    t_team *my_team = ft_get_my_team();
+    t_obj *my_core = ft_get_my_core();
+    t_obj *enemy_core = ft_get_first_opponent_core();
+    t_obj **my_units = ft_get_my_units();
+    t_obj **enemy_units = ft_get_opponent_units();
+
+    // Count our units by type
+    int warrior_count = 0;
+    int worker_count = 0;
+    int i = 0;
+    
+    while (my_units[i]) {
+        if (my_units[i]->s_unit.type_id == UNIT_WARRIOR)
+            warrior_count++;
+        else if (my_units[i]->s_unit.type_id == UNIT_WORKER)
+            worker_count++;
+        i++;
+    }
+
+    // Calculate how many enemy units are nearby our core (threat assessment)
+    int enemies_near_core = 0;
+    i = 0;
+    while (enemy_units[i]) {
+        if (ft_distance(enemy_units[i], my_core) < 20) // Adjust this threshold as needed
+            enemies_near_core++;
+        i++;
+    }
+
+    // Dynamic unit creation strategy
+    // Early game: Focus on workers to build economy
+    // Mid game: Balance between warriors and workers
+    // Late game or under threat: Focus on warriors
+    
+    // Determine current game phase based on our balance and unit counts
+    bool early_game = (my_team->balance < 300 && tick_counter < 500);
+    bool under_threat = (enemies_near_core > 0);
+    
+    // Spawn units based on game state
+    if (early_game && worker_count < 5) {
+        ft_create_unit(UNIT_WORKER);
+    } else if (under_threat || warrior_count * 2 < worker_count) {
+        ft_create_unit(UNIT_WARRIOR);
+    } else if (worker_count < 15) { // Cap worker count at a reasonable number
+        ft_create_unit(UNIT_WORKER);
+    } else {
+        ft_create_unit(UNIT_WARRIOR);
+    }
+
+    // Unit behavior control
+    i = 0;
+    while (my_units[i]) {
+        t_obj *curr = my_units[i];
+        
+        if (curr->s_unit.type_id == UNIT_WARRIOR) {
+            // Warriors behavior
+            if (under_threat && enemies_near_core > warrior_count / 2) {
+                // Defensive positioning - protect our core
+                t_obj *nearest_enemy_to_core = NULL;
+                double min_distance = 99999;
+                int j = 0;
+                
+                while (enemy_units[j]) {
+                    double dist = ft_distance(enemy_units[j], my_core);
+                    if (dist < min_distance) {
+                        min_distance = dist;
+                        nearest_enemy_to_core = enemy_units[j];
+                    }
+                    j++;
+                }
+                
+                if (nearest_enemy_to_core) {
+                    ft_travel_attack(curr, nearest_enemy_to_core);
+                } else {
+                    // Position defensively near the core
+                    int offset_x = (tick_counter % 10) - 5;
+                    int offset_y = ((tick_counter / 10) % 10) - 5;
+                    ft_travel_to(curr, my_core->x + offset_x, my_core->y + offset_y);
+                }
+            } else {
+                // Offensive behavior - target enemy units or core
+                t_obj *enemy = ft_get_nearest_opponent_unit(curr);
+                
+                if (enemy && ft_distance(curr, enemy) < 15) { // If there's an enemy nearby
+                    ft_travel_attack(curr, enemy);
+                } else if (warrior_count >= 5) { // Only attack enemy core with sufficient force
+                    ft_travel_attack(curr, enemy_core);
+                } else {
+                    // Scout and patrol behavior when not enough warriors for direct assault
+                    // This creates a roaming pattern around the map to find resources and enemies
+                    int patrol_x = my_core->x + (30 * cos(tick_counter * 0.05));
+                    int patrol_y = my_core->y + (30 * sin(tick_counter * 0.05));
+                    ft_travel_to(curr, patrol_x, patrol_y);
+                }
+            }
+        } else if (curr->s_unit.type_id == UNIT_WORKER) {
+            // Workers behavior
+            t_obj *nearest_resource = ft_get_nearest_resource(curr);
+            
+            if (nearest_resource) {
+                // If there are enemy units near the resource, avoid it if we're vulnerable
+                bool resource_contested = false;
+                int j = 0;
+                while (enemy_units[j]) {
+                    if (ft_distance(enemy_units[j], nearest_resource) < 10) {
+                        resource_contested = true;
+                        break;
+                    }
+                    j++;
+                }
+                
+                if (resource_contested && warrior_count < 3) {
+                    // Find another resource or stay safe near core
+                    t_obj *alt_resource = NULL;
+                    double max_safety = -1;
+                    j = 0;
+                    
+                    // TODO: Implement safer resource selection
+                    // For now, just return to core area if resource is contested
+                    int safe_x = my_core->x + ((tick_counter % 20) - 10);
+                    int safe_y = my_core->y + (((tick_counter / 20) % 20) - 10);
+                    ft_travel_to(curr, safe_x, safe_y);
+                } else {
+                    // Mine the resource
+                    ft_travel_attack(curr, nearest_resource);
+                }
+            } else {
+                // No resources visible, explore outward from core in a spiral pattern
+                double angle = 0.1 * tick_counter;
+                double radius = 5 + (0.5 * tick_counter % 40);
+                int explore_x = my_core->x + (radius * cos(angle));
+                int explore_y = my_core->y + (radius * sin(angle));
+                ft_travel_to(curr, explore_x, explore_y);
+            }
+        }
+        i++;
+    }
+
+    // Free allocated memory
+    free(my_units);
+    free(enemy_units);
+}
+
